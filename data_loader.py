@@ -5,7 +5,7 @@ import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 
 
-def data_loader(root, batch_size=256, workers=1, pin_memory=True):
+def data_loader(root, rank, world_size, batch_size=256, workers=1, pin_memory=True):
     traindir = os.path.join(root, 'train')
     valdir = os.path.join(root, 'val')
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
@@ -20,7 +20,12 @@ def data_loader(root, batch_size=256, workers=1, pin_memory=True):
             normalize
         ])
     )
-    print('Val Path: {}', format(valdir))
+    train_sampler = torch.utils.data.distributed.DistributedSampler(
+        train_dataset,
+        num_replicas=world_size,
+        rank=rank
+    )
+
     val_dataset = datasets.ImageFolder(
         valdir,
         transforms.Compose([
@@ -30,14 +35,19 @@ def data_loader(root, batch_size=256, workers=1, pin_memory=True):
             normalize
         ])
     )
+    val_sampler = torch.utils.data.distributed.DistributedSampler(
+            val_dataset,
+            num_replicas=world_size,
+            rank=rank
+    )
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=False,
         num_workers=workers,
         pin_memory=pin_memory,
-        sampler=None
+        sampler=train_sampler
     )
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
