@@ -52,7 +52,9 @@ parser.add_argument('--resume', default='', type=str, metavar='PATH',
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
                     help='evaluate model on validation set')
 parser.add_argument('-g', '--gpus', type=int, default=1, metavar='N',
-                                    help='Number of GPUs')
+                                    help='Number of GPUs (default: 1)')
+parser.add_argument('--fp16', type=int, default=0, metavar='N',
+                                    help='FP16 mixed precision Training (default: FP32)')
 
 best_prec1 = 0.0
 os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3,4,5,6,7"
@@ -68,10 +70,10 @@ def setup(rank, world_size):
 def cleanup():
   dist.destroy_process_group()
 
-def demo_basic(rank, world_size, args, use_cuda, model):
-    best_prec1 = 0.0
+best_prec1 = 0.0
+def run(rank, world_size, args, use_cuda, model):
     #--------------- Setup -------------#
-    print(f"Start Training on rank {rank}.")
+    print(f"-- Start Training on rank {rank}.")
     setup(rank, world_size)
     #-----------------------------------#
 
@@ -80,6 +82,13 @@ def demo_basic(rank, world_size, args, use_cuda, model):
     kwargs = {'num_workers': 1, 'pin_memory': True} if use_cuda else {}
 
     model = model.to(rank)
+
+    if args.fp16:
+        model = model.half()
+        for layer in model.modules():
+            if isinstance(layer, nn.BatchNorm2d):
+                layer.float()
+
     model = DDP(model, device_ids=[rank])
 
     # define loss and optimizer
@@ -107,7 +116,7 @@ def demo_basic(rank, world_size, args, use_cuda, model):
     train_loader, val_loader = data_loader(args.data, rank, world_size, args.batch_size, args.workers, args.pin_memory)
 
     if args.evaluate:
-        validate(val_loader, model, criterion, args.print_freq, rank, world_size)
+        validate(val_loader, model, criterion, args.print_freq, rank, world_size, args.fp16)
         return
 
     #scheduler = StepLR(optimizer, step_size=1, gamma=0.7)
@@ -115,10 +124,10 @@ def demo_basic(rank, world_size, args, use_cuda, model):
         adjust_learning_rate(optimizer, epoch, args.lr)
 
         # train for one epoch
-        train(train_loader, model, criterion, optimizer, epoch, args.print_freq, rank, world_size)
+        train(train_loader, model, criterion, optimizer, epoch, args.print_freq, rank, world_size, args.fp16)
 
         # evaluate on validation set
-        prec1, prec5 = validate(val_loader, model, criterion, args.print_freq, rank, world_size)
+        prec1, prec5 = validate(val_loader, model, criterion, args.print_freq, rank, world_size, args.fp16)
 
         #scheduler.step()
 
@@ -193,12 +202,12 @@ def main():
     use_cuda = torch.cuda.is_available()
 
     if torch.cuda.device_count() >= 1:
-        print(f"{torch.cuda.device_count()} GPU(s) available {world_size} GPU(s) will be used.")
+        print(f"=> {torch.cuda.device_count()} GPU(s) available {world_size} GPU(s) will be used.")
                   
-    mp.spawn(demo_basic, args=(world_size, args, use_cuda, model), nprocs=world_size, join=True)
+    mp.spawn(run, args=(world_size, args, use_cuda, model), nprocs=world_size, join=True)
 
 
-def train(train_loader, model, criterion, optimizer, epoch, print_freq, rank, world_size):
+def train(train_loader, model, criterion, optimizer, epoch, print_freq, rank, world_size, half=0):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -215,6 +224,8 @@ def train(train_loader, model, criterion, optimizer, epoch, print_freq, rank, wo
 
         target = target.to(rank)
         input = input.to(rank)
+        if half:
+            input = input.half()
 
         # compute output
         output = model(input)
@@ -251,7 +262,7 @@ def train(train_loader, model, criterion, optimizer, epoch, print_freq, rank, wo
                   data_time=data_time, loss=losses, top1=top1, top5=top5))
 
 
-def validate(val_loader, model, criterion, print_freq, rank, world_size):
+def validate(val_loader, model, criterion, print_freq, rank, world_size, half=0):
     batch_time = AverageMeter()
     losses = AverageMeter()
     top1 = AverageMeter()
@@ -264,6 +275,8 @@ def validate(val_loader, model, criterion, print_freq, rank, world_size):
     for i, (input, target) in enumerate(val_loader):
         target = target.to(rank)
         input = input.to(rank)
+        if half:
+            input = input.half()
 
         with torch.no_grad():
             # compute output
